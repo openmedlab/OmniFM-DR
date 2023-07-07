@@ -26,13 +26,6 @@ key feature bulletin points here
     - Classification
     - Visual Question Answering
 
-## Links
-
-- [Paper](https://)
-- [Model](https://)
-- [Code](https://) 
-<!-- [Code] may link to your project at your institute>
-
 
 <!-- give a introduction of your project -->
 ## Details
