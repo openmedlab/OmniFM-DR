@@ -76,6 +76,8 @@ Public dataset:
 **Installation**
 ```bash
 git clone https://github.com/MedHK23/OmniFM-DR.git
+git clone --depth 1 --filter=blob:none https://github.com/OFA-Sys/OFA.git fairseq
+pip install -e ./fairseq/
 pip install -r requirements.txt
 ```
 
