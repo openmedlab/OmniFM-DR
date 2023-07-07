@@ -83,7 +83,7 @@ pip install -r requirements.txt
 
 **Download Model**
 
-You can download from [Huggingface](https://huggingface.co/OpenMEDLab/OmniFM-DR/blob/main/omnifmdr.pt) Put it under folder checkpoints.
+You can download from [Huggingface](https://huggingface.co/OpenMEDLab/OmniFM-DR/blob/main/omnifmdr.pt). Put it under folder checkpoints.
 
 **Testing**
 ```bash
