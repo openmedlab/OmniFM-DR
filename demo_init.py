@@ -1,69 +1,37 @@
-# pip install g2p-en
-# apt install libsndfile1
-# pip install opencv-python-headless
-
-
 import os
+import sys
+import re
 import cv2
 import numpy
-import sys
-import random
 import torch
-import numpy as np
-import pandas as pd
-from tqdm import tqdm
-from fairseq import checkpoint_utils, distributed_utils, options, tasks, utils
-from fairseq.dataclass.utils import convert_namespace_to_omegaconf
-from tasks.mm_tasks.refcoco import RefcocoTask
-from tasks.mm_tasks.caption import CaptionTask
-from tasks.mm_tasks.seg import SegTask
-from tasks.mm_tasks.vqa_gen import VqaGenTask
-from tasks.pretrain_tasks.joint_task import DRJointTask
-
-from models.ofa import OFAModel
-from PIL import Image
-from torchvision import transforms
-from PIL import Image, ImageOps
 import gensim
 from gensim import corpora
+from loguru import logger
+import numpy as np
+from PIL import Image
+from torchvision import transforms
+from tasks.mm_tasks.omnifmdr import OmniFMDrTask
+from fairseq import checkpoint_utils, options, tasks, utils
+from fairseq.dataclass.utils import convert_namespace_to_omegaconf
 
-import base64
-from io import BytesIO
+logger.add(sys.stderr, format="{time} {level} {message}", filter="my_module", level='INFO')
+logger.add('./results/log/file_{time}.log', enqueue=True)
 
-CUDA_VISIBLE_DEVICES=6
+JOINT_CHECKPOINT='./checkpoints/omnifmdr.pt'
 
-PRIVATE_LABEL={
-    'Atelectasis': '肺不张',
-    'Cardiomegaly': '心影增大',
-    'Edema': '肺水肿',
-    'Pneumonia': '肺炎',
-    'Pneumothorax': '气胸',
-    'Nodule': '结节',
-    'RibFracture': '肋骨骨折',
-    'Effusion': '胸腔积液',
-    'Impurity': '暂无',
-    'Emphysema': '肺气肿',
-    'FiberFoci': '纤维灶',
-    'PleuralThickening': '胸膜增厚',
-    'Tuberculosis': '肺结核',
-    'HilarEnlargement': '肺门增大',
-    'AbnormalAorticKnob': '纵隔病变',
-}
+cfg=None
 generator = None
 bos_item = None
 eos_item = None
 pad_idx = None
 task = None
 models = None
-# turn on cuda if GPU is available
 use_cuda = torch.cuda.is_available()
-# use fp16 only when GPU is available
 use_fp16 = False
-
-# Image transform
 mean = [0.5, 0.5, 0.5]
 std = [0.5, 0.5, 0.5]
 patch_resize_transform = None
+
 
 def init_task():
     global generator
@@ -73,19 +41,22 @@ def init_task():
     global task
     global models
     global patch_resize_transform
+    global cfg
     
-    target_task = 'refcoco'
-    tasks.register_task(target_task, RefcocoTask)
+    target_task = 'omnifm_dr'
+    tasks.register_task(target_task, OmniFMDrTask)
 
     # specify some options for evaluation
     parser = options.get_generation_parser()
-    input_args = ["", "--task=seg", \
-        "--beam=5", "--path=checkpoints/ofa_large_384.pt", \
-            "--bpe-dir=utils/BPE", "--no-repeat-ngram-size=3", "--patch-image-size=384"]
-
-    checkpoint_base = '/mnt/lustre/niziyu/projects/OFA/run_scripts/caption/stage1_checkpoints'
-    input_args[1] = f'--task={target_task}'
-    input_args[3] = '--path=/data/niziyu/projects/DR/third_party/OFA_bak/run_scripts/pretraining/checkpoints/checkpoint_report_vg-0.3_vqa.pt'
+    input_args = [
+        "",
+        "--task={}".format(target_task),
+        "--beam=5",
+        "--path={}".format(JOINT_CHECKPOINT),
+        "--bpe-dir=utils/BPE",
+        "--no-repeat-ngram-size=3", 
+        "--patch-image-size=512"
+    ]
 
     args = options.parse_args_and_arch(parser, input_args)
     cfg = convert_namespace_to_omegaconf(args)
@@ -121,6 +92,76 @@ def init_task():
     bos_item = torch.LongTensor([task.src_dict.bos()])
     eos_item = torch.LongTensor([task.src_dict.eos()])
     pad_idx = task.src_dict.pad()
+
+
+def get_examples():
+    demo_path = './results/demo'
+    images = [
+        '19759491_51878257.jpg', 
+        '15114531_50027153.jpg', 
+        '17206933_51664027.jpg', 
+        '11022245_58274962.jpg',
+        '12530259_54170209.jpg', 
+        '18309149_54224807.jpg', 
+        '12145137_54833205.jpg'
+    ]
+    vg_examples = [
+        ['Pleural Effusion', 'Atelectasis', 'Pneumothorax'],
+        ['Pleural Effusion', 'Pneumonia', 'Pneumothorax'],
+        ['Edema', 'Pleural Effusion', 'Pneumonia'],
+        ['Pleural Effusion', 'Pneumonia', 'Pneumothorax'],
+        ['Atelectasis', 'Pneumothorax', 'nodule'],
+        ['Atelectasis',  'Pneumothorax', 'Pleural Effusion', 'nodule'],
+        ['nodule', 'Pleural Effusion', 'Pneumothorax']
+    ]
+    radio_example = []
+    for im, vgq in zip(images, vg_examples):
+        img = os.path.join(demo_path, im)
+        q = [f'where is {cla}?' for cla in vgq]
+        q = "&&".join(q)
+        q = 'what can we get from this chest medical image? && what disease does this image have?' + '&&' + q 
+        radio_example.append([img, q])
+        
+    return radio_example
+
+
+def image_preprocess(img, target_size=None):
+    if target_size is not None:
+        W, H = img.size
+        img = img.resize(target_size, resample=Image.BICUBIC)
+        
+    raw_image = np.array(img)
+    if len(raw_image.shape) == 2:
+        raw_image = raw_image[:,:,None]
+    else:
+        raw_image = cv2.cvtColor(raw_image, cv2.COLOR_RGB2GRAY)
+    
+    threshold_max = np.percentile(raw_image, 98)
+    raw_image[raw_image > threshold_max] = threshold_max
+    rescaled_image = cv2.convertScaleAbs(raw_image,
+                                        alpha=(255.0 / raw_image.max()))
+
+    # Perform histogram equalization.
+    adjusted_image = cv2.equalizeHist(rescaled_image)
+    img = Image.fromarray(adjusted_image.astype('uint8')).convert('RGB')
+    return img
+
+
+def clean_report(report):
+    report_cleaner = lambda t: t.replace('\n', ' ').replace('__', '_').replace('__', '_').replace('__', '_') \
+        .replace('__', '_').replace('__', '_').replace('__', '_').replace('__', '_').replace('  ', ' ') \
+        .replace('  ', ' ').replace('  ', ' ').replace('  ', ' ').replace('  ', ' ').replace('  ', ' ') \
+        .replace('..', '.').replace('..', '.').replace('..', '.').replace('..', '.').replace('..', '.') \
+        .replace('..', '.').replace('..', '.').replace('..', '.').replace('1. ', '').replace('. 2. ', '. ') \
+        .replace('. 3. ', '. ').replace('. 4. ', '. ').replace('. 5. ', '. ').replace(' 2. ', '. ') \
+        .replace(' 3. ', '. ').replace(' 4. ', '. ').replace(' 5. ', '. ') \
+        .strip().lower().split('. ')
+    sent_cleaner = lambda t: re.sub('[.?;*!%^&_+():-\[\]{}]', '', t.replace('"', '').replace('/', '')
+                                    .replace('\\', '').replace("'", '').strip().lower())
+    tokens = [sent_cleaner(sent) for sent in report_cleaner(report) if sent_cleaner(sent) != []]
+    report = ' . '.join(tokens) + ' .'
+    report = report.replace('..', '.').replace('. .', '.')
+    return report
 
 
 def get_symbols_to_strip_from_output(generator):
@@ -175,17 +216,45 @@ def bin2coord(bins, w_resize_ratio, h_resize_ratio):
     return coord_list, True
 
 
-def bin2coord_seg(bins, w_resize_ratio, h_resize_ratio):
-    bin_list = [int(bin[5:-1]) for bin in bins.strip().split()]
-    # print(f'BINS: {len(bin_list)}')
-    # print(f"Bin list: {bin_list}")
-    coord_list = []
-    for i in range(len(bin_list)):
-        if i % 2 == 0:
-            coord_list += [bin_list[i] / (task.cfg.num_bins - 1) * task.cfg.max_image_size / w_resize_ratio]
+def collate_tokens(
+    values,
+    pad_idx,
+    eos_idx=None,
+    left_pad=False,
+    move_eos_to_beginning=False,
+    pad_to_length=None,
+    pad_to_multiple=1,
+    pad_to_bsz=None,
+):
+    """Convert a list of 1d tensors into a padded 2d tensor."""
+    size = max(v.size(0) for v in values)
+    size = size if pad_to_length is None else max(size, pad_to_length)
+    if pad_to_multiple != 1 and size % pad_to_multiple != 0:
+        size = int(((size - 0.1) // pad_to_multiple + 1) * pad_to_multiple)
+
+    def copy_tensor(src, dst):
+        assert dst.numel() == src.numel()
+        if move_eos_to_beginning:
+            if eos_idx is None:
+                # if no eos_idx is specified, then use the last token in src
+                dst[0] = src[-1]
+            else:
+                dst[0] = eos_idx
+            dst[1:] = src[:-1]
         else:
-            coord_list += [bin_list[i] / (task.cfg.num_bins - 1) * task.cfg.max_image_size / h_resize_ratio]
-    return coord_list
+            dst.copy_(src)
+
+    if values[0].dim() == 1:
+        res = values[0].new(len(values), size).fill_(pad_idx)
+    elif values[0].dim() == 2:
+        assert move_eos_to_beginning is False
+        res = values[0].new(len(values), size, values[0].size(1)).fill_(pad_idx)
+    else:
+        raise NotImplementedError
+
+    for i, v in enumerate(values):
+        copy_tensor(v, res[i][size - len(v) :] if left_pad else res[i][: len(v)])
+    return res
 
 
 def encode_text(text, length=None, append_bos=False, append_eos=False):
@@ -209,11 +278,20 @@ def encode_text(text, length=None, append_bos=False, append_eos=False):
     return s
 
 
-def construct_sample(image: Image, instruction: str):
-    patch_image = patch_resize_transform(image).unsqueeze(0)
-    patch_mask = torch.tensor([True])
-
-    instruction = encode_text(' {}'.format(instruction.lower().strip()), append_bos=True, append_eos=True).unsqueeze(0)
+def construct_sample(image: Image, instruction: str, vqa=False):
+    transformed_image = patch_resize_transform(image)
+    if vqa:
+        patch_image = torch.stack([transformed_image, transformed_image], dim=0)
+        instruction_report = encode_text(' {}'.format(instruction.lower().strip()), append_bos=True, append_eos=True)
+        vqa_instruction = 'what disease does this image have?'
+        instruction_vqa = encode_text(' {}'.format(vqa_instruction.lower().strip()), append_bos=True, append_eos=True)
+        instruction = collate_tokens([instruction_report, instruction_vqa], 0)
+        patch_mask = torch.tensor([True, True])
+    else:
+        patch_image = transformed_image.unsqueeze(0)
+        instruction = encode_text(' {}'.format(instruction.lower().strip()), append_bos=True, append_eos=True).unsqueeze(0)
+        patch_mask = torch.tensor([True])
+    
     instruction_length = torch.LongTensor([s.ne(pad_idx).long().sum() for s in instruction])
     sample = {
         "id":np.array(['42']),
@@ -227,7 +305,6 @@ def construct_sample(image: Image, instruction: str):
     return sample
 
 
-# Function to turn FP32 to FP16
 def apply_half(t):
     if t.dtype is torch.float32:
         return t.to(dtype=torch.half)
@@ -247,14 +324,12 @@ def task_assgin(inst1, insts):
 
         similarity = gensim.similarities.MatrixSimilarity(corpus)
         cosine_sim = similarity[corpus[0]][1]
-        print(f'************** Consin sim: {cosine_sim}')
         if cosine_sim > best_sim:
             best_sim = cosine_sim
             match_id = i
 
     if best_sim <= 0.05:
         return -1, match_id
-    # print('余弦相似度为:', cosine_sim)
     return best_sim, match_id
 
 
@@ -266,73 +341,56 @@ def resize_img(img, w, h, target=768):
     img = cv2.resize(img, (new_w, new_h))
     return img
 
-    
+
 def ask_answer(image, instruction):
+    unkonwn = 'We apologize, but our model is unable to answer your question. Please feel free to try asking another question.'
+    logger.info("Question: {}", instruction)
     
+    cur_instruction = instruction.lower()
     detect_flag = False
+    batch_report_vqa = False
+    # image  = image_preprocess(image)
     w, h = image.size
     w_resize_ratio = task.cfg.patch_image_size / w
     h_resize_ratio = task.cfg.patch_image_size / h
-
-    report_inst = ' what can we get from this chest medical image? '
-    detect_inst = ' Which region does the text describe? '
-    vqa_inst = 'what disease does the image show?'
-    inst_pool = [report_inst, detect_inst, vqa_inst]
     
-    tasks = ['report', 'detect', 'vqa']
-    task_sim, task_id = task_assgin(instruction, inst_pool)
-    cur_instruction = inst_pool[task_id]
-    cur_task = tasks[task_id]
-    if cur_task == 'detect' or 'where' in instruction.lower() or 'locate' in instruction.lower() or 'find' in instruction.lower():
-        detect_flag = True
-        cur_instruction = " Which region does the text {} describe?"
-        key_cls = list(PRIVATE_LABEL.keys())
-        target = key_cls[0]
-        exits = False
-        for k in key_cls:
-            if k.lower() in instruction.lower():
-                target = k
-                exits = True
-                break
-        if exits:
-            cur_instruction = cur_instruction.format(target)
-        else:
-            cur_instruction = instruction
-    else:
-        if task_sim >= 0.8:
-            cur_instruction = instruction
-        
-    if task_sim == -1 and not detect_flag:
-        return 'Sorry, we can not answer your question. Please try other questions.'
-    print(f"Current Inst: {cur_instruction, detect_flag}")
     # Construct input sample & preprocess for GPU if cuda available
-    sample = construct_sample(image, cur_instruction)
+    sample = construct_sample(image, cur_instruction, vqa=batch_report_vqa)
     sample = utils.move_to_cuda(sample) if use_cuda else sample
     sample = utils.apply_to_sample(apply_half, sample) if use_fp16 else sample
 
     # Generate result
     with torch.no_grad():
         hypos = task.inference_step(generator, models, sample)
+        
+        if batch_report_vqa:
+            tokens, bins, imgs = decode_fn(hypos[1][0]["tokens"], task.tgt_dict, task.bpe, generator)
+            detected_disease = [dis.strip() for dis in tokens.split(',')]
+            # if 'Support Devices' in detected_disease:
+            #     detected_disease.remove('Support Devices')
+            score = round(hypos[1][0]["score"].exp().item(), 6)
+            logger.info("Detected disease: {}, {}", detected_disease, score)
+            
         tokens, bins, imgs = decode_fn(hypos[0][0]["tokens"], task.tgt_dict, task.bpe, generator)
-        score = round(hypos[0][0]["score"].exp().item(), 2)
-        # print("Score: ", score)
-        # print(f"Tokens: {tokens}")
-        # print(f"Bins:")
-        # print(bins)
-    
-    tokens = tokens.replace('support devices', '')
+        score = round(hypos[0][0]["score"].exp().item(), 6)
+        logger.info("Answer: {}, {}", score, tokens)
+        logger.info("Coors: {}", bins)
+        
+    # tokens = tokens.replace('support devices', '')
     if len(tokens.split('.')) == 0 and not detect_flag:
-        return 'Sorry, we can not answer your question. Please try other questions.'
-    report = tokens.split('.')
+        return unkonwn
+    report = clean_report(tokens)
+    report = report.split('.')
     report = [r.strip().capitalize() for r in report]
     report = ". ".join(report)
+    report = report.replace('..', '.').replace('. .', '.')
     
     if detect_flag:
         img = cv2.cvtColor(numpy.asarray(image), cv2.COLOR_RGB2BGR)
         for b, color in zip([bins], [(0, 229, 238)]):
             coord_list, bin_flag = bin2coord(b, w_resize_ratio, h_resize_ratio)
             if not bin_flag:
-                return 'Sorry, we can not answer your question. Please try other questions.'
+                return 'We are sorry, but we couldnt find any matches for this disease. Please try searching for another one.'
             cv2.rectangle(
                 img,
                 (int(coord_list[0]), int(coord_list[1])),
@@ -345,5 +403,5 @@ def ask_answer(image, instruction):
         out_name = './results/tmp/detect.jpg'
         img = resize_img(img, w, h)
         cv2.imwrite(out_name, img)
-        return out_name, report
+        return (out_name, report)
     return report

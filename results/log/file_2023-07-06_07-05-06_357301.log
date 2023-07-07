@@ -1,0 +1,3 @@
+2023-07-06 07:05:45.287 | INFO     | demo_init:ask_answer:390 - Question: what can we get from this chest medical image? 
+2023-07-06 07:05:45.345 | INFO     | demo_init:ask_answer:439 - Task : report
+2023-07-06 07:05:45.345 | INFO     | demo_init:ask_answer:440 - Instruction:  what can we get from this chest medical image? 

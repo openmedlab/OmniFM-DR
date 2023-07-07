@@ -8,7 +8,7 @@ Click the image to have a try with OmniFM-DR around the chest DR images
 
 <!-- Insert a pipeline of your algorithm here if got one -->
 <div align="center">
-    <a href="https://bbd003bda9d5acf9be.gradio.live/"><img width="600px" height="auto" src="https://github.com/MedHK23/OmniFM-DR/blob/main/demo.gif"></a>
+    <a href="https://medhk23.github.io/OmniFM-DR-demo/"><img width="600px" height="auto" src="demo.gif"></a>
 </div>
 
 
@@ -41,7 +41,7 @@ key feature bulletin points here
 
 <!-- Insert a pipeline of your algorithm here if got one -->
 <div align="center">
-    <a href="https://847656a535c7a29317.gradio.live/"><img width="1000px" height="auto" src="https://github.com/MedHK23/OmniFM-DR/blob/main/diagram.png"></a>
+    <a href=""><img width="1000px" height="auto" src="omnifmdr.png"></a>
 </div>
 
 More intro text here.
@@ -69,9 +69,8 @@ Public dataset:
 **Main Requirements**  
 
 - python 3.7.4
-- pytorch 1.8.1
-- torchvision 0.9.1
-- gradio 3.34.0
+- pytorch 1.11.0
+- torchvision 0.12.1
 
 
 **Installation**
@@ -83,35 +82,10 @@ pip install -r requirements.txt
 **Download Model**
 
 
-**Preprocess**
-```bash
-python DDD
-```
-
-
-**Training**
-```bash
-python DDD
-```
-
-
-**Validation**
-```bash
-python DDD
-```
-
-
 **Testing**
 ```bash
-python DDD
+python demo.py  # result can be checked in logs
 ```
-
-## 🙋‍♀️ Feedback and Contact
-
-- Email
-- Webpage 
-- Social media
-
 
 ## 🛡️ License
 
@@ -119,8 +93,9 @@ This project is under the CC-BY-NC 4.0 license. See [LICENSE](LICENSE) for detai
 
 ## 🙏 Acknowledgement
 
-A lot of code is modified from [monai](https://github.com/Project-MONAI/MONAI).
+A lot of code is modified from [OFA-Sys](https://github.com/OFA-Sys/OFA). Thanks them for releasing their codes.
 
+## 
 ## 📝 Citation
 
 If you find this repository useful, please consider citing this paper:
@@ -132,4 +107,3 @@ If you find this repository useful, please consider citing this paper:
   year={2023}
 }
 ```
-
