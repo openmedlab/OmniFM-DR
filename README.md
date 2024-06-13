@@ -96,10 +96,10 @@ A lot of code is modified from [OFA-Sys](https://github.com/OFA-Sys/OFA). Thanks
 
 If you find this repository useful, please consider citing this paper:
 ```
-@article{John2023,
-  title={paper},
-  author={John},
-  journal={arXiv preprint arXiv:},
+@article{xu2023learning,
+  title={Learning A Multi-Task Transformer Via Unified And Customized Instruction Tuning For Chest Radiograph Interpretation},
+  author={Xu, Lijian and Ni, Ziyu and Liu, Xinglong and Wang, Xiaosong and Li, Hongsheng and Zhang, Shaoting},
+  journal={arXiv preprint arXiv:2311.01092},
   year={2023}
 }
 ```
